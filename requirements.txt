@@ -1,0 +1,4 @@
+functions-framework
+numpy
+pygltflib
+google-cloud-storage
