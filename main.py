@@ -81,7 +81,7 @@ def create_humanoid():
 
 
 @functions_framework.http
-def model_generate_v2(request):
+def makemodel(request):
     """
     HTTP リクエストを受け取り、Next.jsから送信されたtaskIdとfileExtensionに基づいて
     Cloud Storageから画像を読み込み、固定のヒューマノイドGLBモデルを生成し、GCSに保存してそのURLを返すCloud Function。

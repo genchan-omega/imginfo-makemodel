@@ -5,7 +5,7 @@ steps:
     - gcloud
     - functions
     - deploy
-    - imginfo-checkimg-v2 # ユニークなFunction名
+    - imginfo-makemodel-v2 # ユニークなFunction名
     - --source=.
     - --runtime=python311
     - --trigger-http
