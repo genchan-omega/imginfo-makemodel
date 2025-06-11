@@ -2,22 +2,89 @@
 
 import functions_framework
 import json
+import numpy as np 
+# ★追加: trimesh と trimesh.transformations をインポート
+import trimesh
+import trimesh.transformations
+from pygltflib import GLTF2, Buffer, BufferView, Accessor, Mesh, Primitive, Node, Scene, Asset
 from google.cloud import storage 
 import os 
+import io 
+import time 
 
 # Cloud Storage クライアントの初期化
 storage_client = storage.Client()
 
-# Cloud Storage バケット名
-GCS_BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", "your-gcs-bucket-name-if-not-set")
-if GCS_BUCKET_NAME == "your-gcs-bucket-name-if-not-set":
-    print("WARNING: GCS_BUCKET_NAME environment variable is not set in Cloud Functions. Using placeholder. Please set it in Cloud Build or function configuration.")
+# Cloud Storage 入力バケット名 (アップロードされた画像が保存される場所)
+GCS_INPUT_BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", "your-gcs-input-bucket-if-not-set")
+if GCS_INPUT_BUCKET_NAME == "your-gcs-input-bucket-if-not-set":
+    print("WARNING: GCS_INPUT_BUCKET_NAME environment variable is not set. Using placeholder.")
+
+# Cloud Storage 出力バケット名 (生成したモデルを保存する場所)
+GCS_OUTPUT_BUCKET_NAME = os.environ.get("GCS_OUTPUT_BUCKET_NAME", "your-gcs-output-bucket-if-not-set")
+if GCS_OUTPUT_BUCKET_NAME == "your-gcs-output-bucket-if-not-set":
+    print("WARNING: GCS_OUTPUT_BUCKET_NAME environment variable is not set. Using placeholder.")
+
+# ★★★ 3Dモデル生成のためのヘルパー関数をここに定義 ★★★
+def create_cylinder(radius, height, transform=None):
+    cyl = trimesh.creation.cylinder(radius=radius, height=height)
+    if transform is not None:
+        cyl.apply_transform(transform)
+    return cyl
+
+def create_sphere(radius, center):
+    # icosphereは中心が[0,0,0]なので、translationで移動
+    sphere = trimesh.creation.icosphere(radius=radius, subdivisions=3)
+    sphere.apply_translation(center)
+    return sphere
+
+def create_humanoid():
+    parts = []
+
+    # 頭 (sphere)
+    # 頭の中心は胴体の上にくるように調整
+    head = create_sphere(radius=0.2, center=[0, 0, 1.8])
+    parts.append(head)
+
+    # 胴体 (cylinder)
+    # 胴体の中心は高さの半分になるように調整 (高さ0.8の胴体なら中心はY=0.4、全体を1.2の高さにするなら0.8/2 + (1.2-0.8/2) = 1.2)
+    torso_height = 0.8
+    torso = create_cylinder(radius=0.3, height=torso_height, transform=trimesh.transformations.translation_matrix([0, 0, 1.2 - torso_height/2]))
+    parts.append(torso)
+
+    # 腕 (cylinder)
+    arm_radius = 0.1
+    arm_height = 0.6
+    # 腕の配置は、胴体の中心から左右にオフセットし、回転させて水平にする
+    # translate は cylinder の中心位置を指すように調整
+    left_arm = create_cylinder(radius=arm_radius, height=arm_height, transform=trimesh.transformations.compose_matrix(
+        translate=[-0.3 - arm_height/2, 0, 1.4], # 胴体中心から少し外側かつY=1.4の高さ
+        angles=[0, np.pi/2, 0] # Y軸周りに90度回転して水平に
+    ))
+    right_arm = create_cylinder(radius=arm_radius, height=arm_height, transform=trimesh.transformations.compose_matrix(
+        translate=[0.3 + arm_height/2, 0, 1.4],
+        angles=[0, -np.pi/2, 0] # Y軸周りに-90度回転して水平に
+    ))
+    parts.extend([left_arm, right_arm])
+
+    # 脚 (cylinder)
+    leg_radius = 0.12
+    leg_height = 0.7
+    # 脚の配置は、胴体下部から左右にオフセット
+    left_leg = create_cylinder(radius=leg_radius, height=leg_height, transform=trimesh.transformations.translation_matrix([-0.15, 0, leg_height/2]))
+    right_leg = create_cylinder(radius=leg_radius, height=leg_height, transform=trimesh.transformations.translation_matrix([0.15, 0, leg_height/2]))
+    parts.extend([left_leg, right_leg])
+
+    # 全てのパーツを統合して一つのメッシュにする
+    humanoid = trimesh.util.concatenate(parts)
+    return humanoid
+
 
 @functions_framework.http
-def makemodel(request):
+def model_generate_v2(request):
     """
-    HTTP リクエストを受け取り、Cloud Storageから画像を読み込み、/tmpに保存し、
-    その画像データ（バイナリ）をそのままNext.jsに返すCloud Function。
+    HTTP リクエストを受け取り、Next.jsから送信されたtaskIdとfileExtensionに基づいて
+    Cloud Storageから画像を読み込み、固定のヒューマノイドGLBモデルを生成し、GCSに保存してそのURLを返すCloud Function。
     """
     # CORS プリフライトリクエストへの対応
     if request.method == 'OPTIONS':
@@ -29,12 +96,10 @@ def makemodel(request):
         }
         return ('', 204, headers)
 
-    # レスポンスヘッダーの設定 (ここでは画像を返すためContent-Typeを動的に設定)
+    # レスポンスヘッダーの設定 (今回はJSONを返す)
     response_headers = {
         'Access-Control-Allow-Origin': '*',
-        # Content-Typeは動的に設定するため、ここではデフォルト値を設定しない
-        # または、クライアントから渡される拡張子で推測する
-        # 'Content-Type': 'application/octet-stream' # デフォルト
+        'Content-Type': 'application/json' # JSONを返す
     }
 
     request_json = request.get_json(silent=True)
@@ -48,68 +113,97 @@ def makemodel(request):
     else:
         error_message = "No JSON data found in request body."
         print(f"Error: {error_message}")
-        response_headers['Content-Type'] = 'application/json' # エラー時はJSONを返す
         return (json.dumps({'error': error_message}), 400, response_headers)
 
     if not received_task_id:
         error_message = "Missing 'taskId' in request body."
         print(f"Error: {error_message}")
-        response_headers['Content-Type'] = 'application/json'
         return (json.dumps({'error': error_message}), 400, response_headers)
     
     if not received_file_extension:
         error_message = "Missing 'fileExtension' in request body."
         print(f"Error: {error_message}")
-        response_headers['Content-Type'] = 'application/json'
         return (json.dumps({'error': error_message}), 400, response_headers)
 
     try:
-        # --- GCSから画像を読み込む ---
-        gcs_file_path = f"uploads/{received_task_id}.{received_file_extension}" 
-        print(f"Cloud Functions: Attempting to download from GCS path: gs://{GCS_BUCKET_NAME}/{gcs_file_path}")
+        # --- GCSから画像を読み込む (画像データは受け取るが、モデル生成には使わない) ---
+        gcs_input_file_path = f"uploads/{received_task_id}.{received_file_extension}" 
+        print(f"Cloud Functions: Attempting to download input from GCS: gs://{GCS_INPUT_BUCKET_NAME}/{gcs_input_file_path}")
 
-        bucket = storage_client.bucket(GCS_BUCKET_NAME)
-        blob = bucket.blob(gcs_file_path)
+        input_bucket = storage_client.bucket(GCS_INPUT_BUCKET_NAME)
+        input_blob = input_bucket.blob(gcs_input_file_path)
 
-        if not blob.exists():
-            error_message = f"File not found in GCS: gs://{GCS_BUCKET_NAME}/{gcs_file_path}. Please check filename or upload status."
+        # ファイルが存在しない場合のリトライロジック (タイムラグ吸収用)
+        max_retries = 5 
+        retry_delay_seconds = 2 
+
+        file_found = False
+        for attempt in range(max_retries):
+            print(f"Cloud Functions: Checking input file (Attempt {attempt + 1}/{max_retries})")
+            if input_blob.exists():
+                print(f"Cloud Functions: Input file '{gcs_input_file_path}' found on attempt {attempt + 1}.")
+                file_found = True
+                break
+            else:
+                print(f"Cloud Functions: Input file '{gcs_input_file_path}' not found on attempt {attempt + 1}. Retrying in {retry_delay_seconds} seconds...")
+                time.sleep(retry_delay_seconds) 
+
+        if not file_found: 
+            error_message = f"Input file not found in GCS after {max_retries} attempts: gs://{GCS_INPUT_BUCKET_NAME}/{gcs_input_file_path}. Please check filename or upload status."
             print(f"Error: {error_message}")
-            response_headers['Content-Type'] = 'application/json' 
-            return (json.dumps({'error': error_message}), 404, response_headers) 
+            return (json.dumps({'error': error_message}), 404, response_headers)
 
-        file_contents = blob.download_as_bytes()
-        print(f"File '{gcs_file_path}' downloaded from GCS. Size: {len(file_contents)} bytes")
+        file_contents = input_blob.download_as_bytes()
+        print(f"DEBUG: Type of input file_contents: {type(file_contents)}, Length: {len(file_contents)} bytes")
 
-        # 読み込んだ画像を /tmp ディレクトリに保存 (これは検証のために残します)
+        # 読み込んだ画像を /tmp ディレクトリに保存 (これはデバッグのために残します)
         local_temp_file_path = os.path.join("/tmp", f"{received_task_id}.{received_file_extension}")
         with open(local_temp_file_path, "wb") as f:
             f.write(file_contents)
-        print(f"File successfully saved to local /tmp: {local_temp_file_path}")
+        print(f"Input file successfully saved to local /tmp: {local_temp_file_path}")
 
-        # --- 読み込んだ画像データをそのままバイナリレスポンスとして返す ---
-        # Content-Typeを画像のMIMEタイプに設定
-        # received_file_extension を使って Content-Type を推測
-        image_mime_type = f"image/{received_file_extension}" # 例: image/png, image/jpeg
-        if received_file_extension.lower() == 'jpg': # 拡張子がjpgの場合の一般的なMIMEタイプ
-            image_mime_type = 'image/jpeg'
-        elif received_file_extension.lower() == 'jpeg':
-            image_mime_type = 'image/jpeg'
-        elif received_file_extension.lower() == 'png':
-            image_mime_type = 'image/png'
-        elif received_file_extension.lower() == 'gif':
-            image_mime_type = 'image/gif'
-        # 他の画像形式にも対応が必要なら追加
+        # --- ここからが3Dモデル生成の開始点 ---
+        print(f"Cloud Functions: STARTING 3D MODEL GENERATION PROCESS for taskId: {received_task_id}")
         
-        response_headers['Content-Type'] = image_mime_type 
+        # ★★★ ここを修正: ヒューマノイドモデルを生成 ★★★
+        humanoid_model = create_humanoid()
+        
+        # trimeshモデルをGLBバイナリに変換
+        # trimesh.exportはファイルパスを受け取るが、BytesIOに書き出すことも可能
+        glb_buffer = io.BytesIO()
+        humanoid_model.export(file_obj=glb_buffer, file_type='glb') # file_objにBytesIOを渡す
+        glb_data = glb_buffer.getvalue() # BytesIOからバイトデータを取得
+        
+        print(f"Cloud Functions: Humanoid model generated. GLB size: {len(glb_data)} bytes.")
 
-        return (file_contents, 200, response_headers)
+
+        # ★★★ 生成したGLBファイルをGCSに保存し、公開URLを返す ★★★
+        output_blob_name = f"output/{received_task_id}.glb" # 出力パス (例: output/UUID.glb)
+        output_bucket = storage_client.bucket(GCS_OUTPUT_BUCKET_NAME)
+        output_blob = output_bucket.blob(output_blob_name)
+
+        output_blob.upload_from_string(glb_data, content_type='model/gltf-binary')
+        print(f"Cloud Functions: GLB model uploaded to GCS: gs://{GCS_OUTPUT_BUCKET_NAME}/{output_blob_name}")
+
+        # オブジェクトを公開にする（または署名付きURLを生成する）
+        output_blob.make_public()
+        public_url = output_blob.public_url
+        print(f"Cloud Functions: Public URL generated: {public_url}")
+
+        # Next.jsにGLBの公開URLをJSONで返す
+        response_data = {
+            "model_url": public_url,
+            "task_id": received_task_id,
+            "message": "3D model generated and uploaded successfully!"
+        }
+        response_headers['Content-Type'] = 'application/json' # JSONを返す
+        return (json.dumps(response_data), 200, response_headers)
 
     except Exception as e:
-        # エラー発生時のログ出力とJSONエラーレスポンス
-        error_message = f"Unexpected error in Cloud Functions (image return mode): {str(e)}"
+        error_message = f"3D Model generation or GCS access failed: {str(e)}"
         print(f"Error: {error_message}")
-        response_headers['Content-Type'] = 'application/json' # エラー時はJSONを返す
-        if "File not found in GCS" in str(e) or ("Access denied" in str(e) and "storage.googleapis.com" in str(e)): 
+        response_headers['Content-Type'] = 'application/json' 
+        if "File not found in GCS" in str(e):
             return (json.dumps({'error': error_message}), 404, response_headers)
         else:
             return (json.dumps({'error': error_message}), 500, response_headers)
