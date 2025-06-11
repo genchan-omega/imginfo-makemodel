@@ -3,9 +3,6 @@
 import functions_framework
 import json
 import numpy as np 
-# ★追加: trimesh と trimesh.transformations をインポート
-import trimesh
-import trimesh.transformations
 from pygltflib import GLTF2, Buffer, BufferView, Accessor, Mesh, Primitive, Node, Scene, Asset
 from google.cloud import storage 
 import os 
@@ -25,7 +22,7 @@ GCS_OUTPUT_BUCKET_NAME = os.environ.get("GCS_OUTPUT_BUCKET_NAME", "your-gcs-outp
 if GCS_OUTPUT_BUCKET_NAME == "your-gcs-output-bucket-if-not-set":
     print("WARNING: GCS_OUTPUT_BUCKET_NAME environment variable is not set. Using placeholder.")
 
-# ★★★ 3Dモデル生成のためのヘルパー関数をここに定義 ★★★
+# 3Dモデル生成のためのヘルパー関数
 def create_cylinder(radius, height, transform=None):
     cyl = trimesh.creation.cylinder(radius=radius, height=height)
     if transform is not None:
@@ -33,7 +30,6 @@ def create_cylinder(radius, height, transform=None):
     return cyl
 
 def create_sphere(radius, center):
-    # icosphereは中心が[0,0,0]なので、translationで移動
     sphere = trimesh.creation.icosphere(radius=radius, subdivisions=3)
     sphere.apply_translation(center)
     return sphere
@@ -42,12 +38,10 @@ def create_humanoid():
     parts = []
 
     # 頭 (sphere)
-    # 頭の中心は胴体の上にくるように調整
     head = create_sphere(radius=0.2, center=[0, 0, 1.8])
     parts.append(head)
 
     # 胴体 (cylinder)
-    # 胴体の中心は高さの半分になるように調整 (高さ0.8の胴体なら中心はY=0.4、全体を1.2の高さにするなら0.8/2 + (1.2-0.8/2) = 1.2)
     torso_height = 0.8
     torso = create_cylinder(radius=0.3, height=torso_height, transform=trimesh.transformations.translation_matrix([0, 0, 1.2 - torso_height/2]))
     parts.append(torso)
@@ -55,22 +49,19 @@ def create_humanoid():
     # 腕 (cylinder)
     arm_radius = 0.1
     arm_height = 0.6
-    # 腕の配置は、胴体の中心から左右にオフセットし、回転させて水平にする
-    # translate は cylinder の中心位置を指すように調整
     left_arm = create_cylinder(radius=arm_radius, height=arm_height, transform=trimesh.transformations.compose_matrix(
-        translate=[-0.3 - arm_height/2, 0, 1.4], # 胴体中心から少し外側かつY=1.4の高さ
-        angles=[0, np.pi/2, 0] # Y軸周りに90度回転して水平に
+        translate=[-0.3 - arm_height/2, 0, 1.4], 
+        angles=[0, np.pi/2, 0] 
     ))
     right_arm = create_cylinder(radius=arm_radius, height=arm_height, transform=trimesh.transformations.compose_matrix(
         translate=[0.3 + arm_height/2, 0, 1.4],
-        angles=[0, -np.pi/2, 0] # Y軸周りに-90度回転して水平に
+        angles=[0, -np.pi/2, 0] 
     ))
     parts.extend([left_arm, right_arm])
 
     # 脚 (cylinder)
     leg_radius = 0.12
     leg_height = 0.7
-    # 脚の配置は、胴体下部から左右にオフセット
     left_leg = create_cylinder(radius=leg_radius, height=leg_height, transform=trimesh.transformations.translation_matrix([-0.15, 0, leg_height/2]))
     right_leg = create_cylinder(radius=leg_radius, height=leg_height, transform=trimesh.transformations.translation_matrix([0.15, 0, leg_height/2]))
     parts.extend([left_leg, right_leg])
@@ -165,27 +156,24 @@ def makemodel(request):
         # --- ここからが3Dモデル生成の開始点 ---
         print(f"Cloud Functions: STARTING 3D MODEL GENERATION PROCESS for taskId: {received_task_id}")
         
-        # ★★★ ここを修正: ヒューマノイドモデルを生成 ★★★
         humanoid_model = create_humanoid()
         
-        # trimeshモデルをGLBバイナリに変換
-        # trimesh.exportはファイルパスを受け取るが、BytesIOに書き出すことも可能
         glb_buffer = io.BytesIO()
-        humanoid_model.export(file_obj=glb_buffer, file_type='glb') # file_objにBytesIOを渡す
-        glb_data = glb_buffer.getvalue() # BytesIOからバイトデータを取得
+        humanoid_model.export(file_obj=glb_buffer, file_type='glb') 
+        glb_data = glb_buffer.getvalue() 
         
         print(f"Cloud Functions: Humanoid model generated. GLB size: {len(glb_data)} bytes.")
 
 
         # ★★★ 生成したGLBファイルをGCSに保存し、公開URLを返す ★★★
-        output_blob_name = f"output/{received_task_id}.glb" # 出力パス (例: output/UUID.glb)
+        # ★ここを修正：出力パスから 'output/' フォルダを削除 ★
+        output_blob_name = f"{received_task_id}.glb" # 例: UUID.glb
         output_bucket = storage_client.bucket(GCS_OUTPUT_BUCKET_NAME)
         output_blob = output_bucket.blob(output_blob_name)
 
         output_blob.upload_from_string(glb_data, content_type='model/gltf-binary')
         print(f"Cloud Functions: GLB model uploaded to GCS: gs://{GCS_OUTPUT_BUCKET_NAME}/{output_blob_name}")
 
-        # オブジェクトを公開にする（または署名付きURLを生成する）
         output_blob.make_public()
         public_url = output_blob.public_url
         print(f"Cloud Functions: Public URL generated: {public_url}")
