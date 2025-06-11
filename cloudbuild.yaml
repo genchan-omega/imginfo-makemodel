@@ -13,6 +13,6 @@ steps:
     - --entry-point=makemodel # main.pyの関数名 (def makemodel(request):)
     - --region=asia-northeast1
     # ★★★ ここを修正 ★★★
-    - --set-env-vars=GCS_BUCKET_NAME=model-raw-img,GCS_OUTPUT_BUCKET_NAME=model-generate-output-models # ★GCS_OUTPUT_BUCKET_NAMEを追加し、正しいバケット名に置き換える
+    - --set-env-vars=GCS_BUCKET_NAME=model-raw-img,GCS_OUTPUT_BUCKET_NAME=model-output-urls # ★GCS_OUTPUT_BUCKET_NAMEを追加し、正しいバケット名に置き換える
 options:
   default_logs_bucket_behavior: REGIONAL_USER_OWNED_BUCKET
