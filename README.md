@@ -2,6 +2,6 @@
 
 - 画像情報メディア特論Ⅰ用のレポジトリ
 
-- 動作確認部分を担う
+- モデル生成部分を担う
 
-- [サイトURL](https://imginfo.vercel.app/)# imginfo-makemodel
+- [サイトURL](https://imginfo.vercel.app/)
