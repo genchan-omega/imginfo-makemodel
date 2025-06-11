@@ -10,9 +10,9 @@ steps:
     - --runtime=python311
     - --trigger-http
     - --allow-unauthenticated
-    - --entry-point=makemodel # main.pyの関数名
+    - --entry-point=makemodel # main.pyの関数名 (def makemodel(request):)
     - --region=asia-northeast1
-    - --set-env-vars=GCS_BUCKET_NAME=model-raw-image # GCSのバケット名
-# 以下を追加
+    # ★★★ ここを修正 ★★★
+    - --set-env-vars=GCS_BUCKET_NAME=model-raw-img,GCS_OUTPUT_BUCKET_NAME=model-generate-output-models # ★GCS_OUTPUT_BUCKET_NAMEを追加し、正しいバケット名に置き換える
 options:
   default_logs_bucket_behavior: REGIONAL_USER_OWNED_BUCKET
