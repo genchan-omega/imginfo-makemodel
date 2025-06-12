@@ -8,6 +8,7 @@ from google.cloud import storage
 import os 
 import io 
 import time 
+import trimesh
 
 # Cloud Storage クライアントの初期化
 storage_client = storage.Client()
